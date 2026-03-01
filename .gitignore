@@ -1,0 +1,12 @@
+# Temp File
+tmp/
+temporary/
+
+# Local Files
+local/
+
+# Dataset Files
+datasets/
+
+# Plan Files
+plans/
