@@ -106,29 +106,74 @@ class MSPreprocessor:
         normalized_image.CopyInformation(image)
         return normalized_image
 
-    def run_pipeline(self, flair_path, t1_path=None, t2_path=None, mask_path=None):
+    def run_pipeline(self, flair_path, t1_path=None, t2_path=None, mask_path=None, subject_id="sub-001"):
         """
         Executes the full pipeline for a single subject.
         """
-        # Load FLAIR as the fixed reference
+        from .skull_strip import simple_skull_strip
+        
+        print(f"Processing subject: {subject_id}...")
+        
+        # 1. Load FLAIR as the fixed reference
         flair = sitk.ReadImage(flair_path)
         flair = self.reorient_to_ras(flair)
         flair = self.resample_image(flair)
         
-        # Placeholder for Skull Stripping (Integration required with a chosen tool)
-        # Assuming flair_mask is generated here
-        # flair_mask = self.skull_strip(flair) 
+        # 2. Skull Stripping
+        print("Skull stripping...")
+        flair_mask = simple_skull_strip(flair)
         
-        # Apply N4 Bias Correction
-        # flair = self.n4_bias_correction(flair, mask=flair_mask)
+        # 3. Apply N4 Bias Correction inside the brain mask
+        print("N4 Bias Correction...")
+        flair = self.n4_bias_correction(flair, mask=flair_mask)
         
-        # Normalize
+        # 4. Normalize
+        print("Intensity normalization...")
         flair_final = self.z_score_normalize(flair)
         
-        # Save results
-        # sitk.WriteImage(flair_final, os.path.join(self.output_dir, "flair_processed.nii.gz"))
+        # 5. Handle T1, T2 if provided
+        processed_images = {'flair': flair_final}
         
-        return flair_final
+        if t1_path:
+            print("Processing T1...")
+            t1 = sitk.ReadImage(t1_path)
+            t1 = self.reorient_to_ras(t1)
+            t1 = self.resample_image(t1)
+            t1 = self.register_images(flair_final, t1)
+            t1 = self.n4_bias_correction(t1, mask=flair_mask)
+            t1 = self.z_score_normalize(t1)
+            processed_images['t1'] = t1
+            
+        if t2_path:
+            print("Processing T2...")
+            t2 = sitk.ReadImage(t2_path)
+            t2 = self.reorient_to_ras(t2)
+            t2 = self.resample_image(t2)
+            t2 = self.register_images(flair_final, t2)
+            t2 = self.n4_bias_correction(t2, mask=flair_mask)
+            t2 = self.z_score_normalize(t2)
+            processed_images['t2'] = t2
+
+        if mask_path:
+            print("Processing Lesion Mask...")
+            mask = sitk.ReadImage(mask_path)
+            mask = self.reorient_to_ras(mask)
+            mask = self.resample_image(mask, is_mask=True)
+            # Re-register mask if it was not in the same space as FLAIR
+            mask = self.register_images(flair_final, mask, is_mask=True)
+            processed_images['mask'] = mask
+
+        # 6. Save results to subject-specific output directory
+        subject_output_dir = os.path.join(self.output_dir, subject_id)
+        os.makedirs(subject_output_dir, exist_ok=True)
+        
+        for name, img in processed_images.items():
+            out_file = os.path.join(subject_output_dir, f"{subject_id}_{name}.nii.gz")
+            sitk.WriteImage(img, out_file)
+            print(f"Saved: {out_file}")
+        
+        return processed_images
+
 
 if __name__ == "__main__":
     pass
