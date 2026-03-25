@@ -7,6 +7,7 @@ local/
 
 # Dataset Files
 datasets/
+data/
 
 # Plan Files
 plans/
@@ -14,3 +15,6 @@ plans/
 # AI Files
 CLAUDE.md
 .claude/
+
+# Python Files
+venv/
