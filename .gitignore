@@ -9,6 +9,13 @@ local/
 datasets/
 data/
 
+# ML Models
+models/
+
+# Gradio files
+.gradio/
+demo_outputs/
+
 # Plan Files
 plans/
 
