@@ -17,6 +17,16 @@ st.set_page_config(
     page_title="MS Lesion AI",
     page_icon="🧠",
     layout="wide",
+    menu_items={
+        "About": """
+        **🧠 MS Lesion Segmentation Dashboard**
+
+        Developed by **Karthikeya Akhandam**
+
+        🔗 [GitHub](https://github.com/Karthikeya-Akhandam)  
+        💼 [LinkedIn](https://linkedin.com/in/karthikeyaakhandam)
+        """
+    }
 )
 
 # ── Model loading (cached so it only runs once) ───────────────────────────────
