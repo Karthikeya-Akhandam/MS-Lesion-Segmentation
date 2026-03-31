@@ -27,7 +27,7 @@ model = None
 # ── Model definition ─────────────────────────────────────────────────────────
 def get_model():
     return BasicUNet(
-        spatial_dims=3, in_channels=1, out_channels=1,
+        spatial_dims=3, in_channels=3, out_channels=1,  # 3 channels: FLAIR + T1 + T2
         features=(32, 64, 128, 256, 512, 32),
         act="LEAKYRELU", norm="INSTANCE", dropout=0.1,
     )
@@ -45,7 +45,8 @@ def apply_skull_strip(sitk_img):
     return sitk.Multiply(sitk.Cast(sitk_img, sitk.sitkFloat32), mask_float)
 
 
-def preprocess_for_demo(img_path):
+def _preprocess_single(img_path):
+    """N4 bias correction → skull strip → RAS+ → 1 mm isotropic → z-score. Returns 3-D numpy array."""
     raw  = sitk.ReadImage(img_path)
     mask = sitk.OtsuThreshold(raw, 0, 1)
     cor  = sitk.N4BiasFieldCorrectionImageFilter()
@@ -68,6 +69,16 @@ def preprocess_for_demo(img_path):
     return arr
 
 
+def preprocess_for_demo(flair_path, t1_path, t2_path):
+    """Preprocess all three modalities and stack into shape (3, D, H, W).
+    All three volumes are cropped to the minimum common spatial shape."""
+    arrs = [_preprocess_single(p) for p in (flair_path, t1_path, t2_path)]
+    # Crop to minimum common shape so np.stack works cleanly
+    min_shape = tuple(min(a.shape[d] for a in arrs) for d in range(3))
+    cropped   = [a[:min_shape[0], :min_shape[1], :min_shape[2]] for a in arrs]
+    return np.stack(cropped, axis=0)  # (3, D, H, W)
+
+
 # ── Inference ─────────────────────────────────────────────────────────────────
 def remove_fp_noise(mask, min_size=5):
     labeled, n = cc_label(mask)
@@ -79,7 +90,8 @@ def remove_fp_noise(mask, min_size=5):
 
 
 def segment_volume(arr):
-    t = torch.tensor(arr).float().unsqueeze(0).unsqueeze(0).to(device)
+    # arr shape: (3, D, H, W) — add batch dim → (1, 3, D, H, W)
+    t = torch.tensor(arr).float().unsqueeze(0).to(device)
     with torch.no_grad():
         if device.type == "cuda":
             with torch.amp.autocast('cuda'):
@@ -178,10 +190,10 @@ def create_change_mosaic(img_vol, new_mask, resolved_mask):
 
 
 # ── High-level analysis functions ─────────────────────────────────────────────
-def run_ai_analysis(file_obj, gt_file_obj=None):
-    if file_obj is None:
-        return None, "Please upload a NIfTI file (.nii or .nii.gz)."
-    arr            = preprocess_for_demo(file_obj.name)
+def run_ai_analysis(flair_obj, t1_obj, t2_obj, gt_file_obj=None):
+    if flair_obj is None or t1_obj is None or t2_obj is None:
+        return None, "Please upload all three modalities: FLAIR, T1, and T2."
+    arr            = preprocess_for_demo(flair_obj.name, t1_obj.name, t2_obj.name)
     mask, prob_np  = segment_volume(arr)
     vol, count, sizes = run_lesion_stats(mask)
     conf           = compute_confidence_metrics(mask, prob_np)
@@ -223,20 +235,22 @@ def run_ai_analysis(file_obj, gt_file_obj=None):
 {acc_section}
 *Processed on {DEVICE_NAME}*
 """
-    return create_mosaic(arr, mask), report
+    # Use FLAIR channel (arr[0]) for overlay visualisation
+    return create_mosaic(arr[0], mask), report
 
 
-def run_longitudinal_analysis(t0_file, t1_file):
-    if t0_file is None or t1_file is None:
-        return None, None, "Please upload both Baseline (T0) and Follow-up (T1) scans."
+def run_longitudinal_analysis(t0_flair, t0_t1, t0_t2, t1_flair, t1_t1, t1_t2):
+    if any(f is None for f in [t0_flair, t0_t1, t0_t2, t1_flair, t1_t1, t1_t2]):
+        return None, None, "Please upload all six scans (FLAIR, T1, T2 for each timepoint)."
 
-    arr_t0          = preprocess_for_demo(t0_file.name)
-    arr_t1          = preprocess_for_demo(t1_file.name)
+    arr_t0          = preprocess_for_demo(t0_flair.name, t0_t1.name, t0_t2.name)
+    arr_t1          = preprocess_for_demo(t1_flair.name, t1_t1.name, t1_t2.name)
     mask_t0, _      = segment_volume(arr_t0)
     mask_t1, _      = segment_volume(arr_t1)
 
-    fixed  = sitk.GetImageFromArray(arr_t0.astype(np.float32))
-    moving = sitk.GetImageFromArray(arr_t1.astype(np.float32))
+    # Registration uses FLAIR channel (arr[0]) for mutual information alignment
+    fixed  = sitk.GetImageFromArray(arr_t0[0].astype(np.float32))
+    moving = sitk.GetImageFromArray(arr_t1[0].astype(np.float32))
     reg    = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
     reg.SetOptimizerAsGradientDescent(learningRate=1.0, numberOfIterations=100)
@@ -266,4 +280,4 @@ def run_longitudinal_analysis(t0_file, t1_file):
     report += f"\n**New lesions detected:** {new_cnt} &nbsp;&nbsp; **Resolved lesions:** {res_cnt}\n"
     report += f"\n*Registration + segmentation on {DEVICE_NAME}*"
 
-    return create_mosaic(arr_t0, mask_t0), create_change_mosaic(arr_t0, new_lesions, resolved_lesions), report
+    return create_mosaic(arr_t0[0], mask_t0), create_change_mosaic(arr_t0[0], new_lesions, resolved_lesions), report
